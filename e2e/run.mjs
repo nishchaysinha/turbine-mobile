@@ -470,7 +470,7 @@ async function main() {
     await phone.getByText('Code', { exact: true }).click();
     await phone.getByText('src/server.ts', { exact: true }).waitFor();
     await phone.getByText('package.json', { exact: true }).first().waitFor();
-    const call = await desktop.evaluate(() => window.desktop.invokes().find((c) => c.cmd === 'get_git_diff'));
+    const call = await desktop.evaluate(() => window.desktop.invokes().find((c) => c.cmd === 'get_git_review'));
     assert(call.args.path === '/Users/dev/project', `diff path, got ${JSON.stringify(call.args)}`);
     await shot(phone, 'code-changes', 'Code → Changes: per-file diffs with old/new line numbers; tap any line to comment');
     await addNote('Comment on src/server.ts line 15', 'Make the limit configurable via RATE_LIMIT_MAX');

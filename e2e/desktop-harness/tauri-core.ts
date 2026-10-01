@@ -44,7 +44,8 @@ function fileTree() {
       entries.set(rel, i < parts.length - 1);
     });
   }
-  return [...entries].map(([relativePath, isDir]) => ({ path: `${ROOT}/${relativePath}`, relativePath, isDir }));
+  // Same snake_case shape as the Rust command.
+  return [...entries].map(([relativePath, isDir]) => ({ path: `${ROOT}/${relativePath}`, relative_path: relativePath, is_dir: isDir }));
 }
 
 const day = (offset: number, hour: number) => {
@@ -125,6 +126,7 @@ const handlers: Record<string, Handler> = {
   load_swarm_runs: ({ projectPath }) => runsDb.filter((r) => r.project_path === projectPath),
   load_swarm_agents: ({ swarmRunId }) => agentsDb[swarmRunId] ?? [],
   pty_take_output: () => new ArrayBuffer(0),
+  get_git_review: (args) => ({ scope: 'all', diff: handlers.get_git_diff(args), base: null, branch: 'feature/rate-limit', truncated: false, untracked: 1 }),
   get_git_diff: ({ path }) => {
     if (path !== ROOT) throw new Error(`Git error: not a repo (${path})`);
     return [
