@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Turbine Desktop (harness)</title>
+  <style>
+    body { background:#0b1220; color:#d6e6f5; font:14px -apple-system, sans-serif; padding:24px; }
+    .card { background:#091728; border:1px solid #173757; border-radius:12px; padding:20px; max-width:420px; }
+    #code { font:700 28px ui-monospace, monospace; color:#00e5c8; letter-spacing:2px; }
+    .muted { color:#7b96ad; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="muted">📱 Mobile Companion · desktop harness running the real P2PBridge</div>
+    <p>Pairing code</p>
+    <div id="code">—</div>
+    <p>Status: <b id="status">disconnected</b> <span id="latency" class="muted"></span></p>
+  </div>
+  <script src="./bundle.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "turbine-companion-e2e",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end test: real signaling handlers + real desktop p2pBridge + the companion web build over real WebRTC",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "@xterm/xterm": "5.5.0",
+    "esbuild": "^0.25.0",
+    "playwright": "1.56.1"
+  }
+}
