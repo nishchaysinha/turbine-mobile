@@ -394,12 +394,119 @@ async function main() {
     assert(created?.project_path === '/Users/dev/project', `task created in project, got ${created?.project_path}`);
   });
 
-  await step('Diffs: live git diff of the focused project', async () => {
-    await phone.getByText('Diffs', { exact: true }).click();
-    await phone.getByText(/rateLimit\(/).waitFor();
+  const ptyText = (call) => Buffer.from(call.args.data).toString();
+  const spawnsSince = (n) =>
+    desktop.evaluate((n) => window.desktop.invokes().slice(n).filter((c) => c.cmd === 'swarm_spawn_agent'), n);
+  const invokeCount = () => desktop.evaluate(() => window.desktop.invokes().length);
+
+  async function addNote(label, text) {
+    await phone.getByLabel(label, { exact: true }).click();
+    await phone.getByText(/^(Add review note|Edit note)$/).waitFor();
+    await phone.getByPlaceholder('What should change here?').fill(text);
+    await phone.getByText('Save note', { exact: true }).click();
+    await phone.getByText(text).first().waitFor();
+  }
+
+  await step('Code: review changes per file and leave line notes', async () => {
+    await phone.getByText('Code', { exact: true }).click();
+    await phone.getByText('src/server.ts', { exact: true }).waitFor();
+    await phone.getByText('package.json', { exact: true }).first().waitFor();
     const call = await desktop.evaluate(() => window.desktop.invokes().find((c) => c.cmd === 'get_git_diff'));
     assert(call.args.path === '/Users/dev/project', `diff path, got ${JSON.stringify(call.args)}`);
-    await shot(phone, 'diffs', 'Git diff of the focused pane’s project, colored per line');
+    await shot(phone, 'code-changes', 'Code → Changes: per-file diffs with old/new line numbers; tap any line to comment');
+    await addNote('Comment on src/server.ts line 15', 'Make the limit configurable via RATE_LIMIT_MAX');
+    await phone.getByLabel('Next change').click();
+    await addNote('Comment on package.json line 3', 'Add a CHANGELOG entry for 1.4.0');
+    await phone.getByText('2 review notes').waitFor();
+    await shot(phone, 'code-review-notes', 'Review notes sit inline under the lines they refer to');
+  });
+
+  await step('Code: send the review to a new agent run', async () => {
+    const before = await invokeCount();
+    await phone.getByText('Send to agent →').click();
+    await phone.getByText('Send 2 notes').waitFor();
+    await phone.getByText('▸ Preview prompt').click();
+    await phone.getByText(/You are reviewing the current working tree/).waitFor();
+    await shot(phone, 'code-send-review', 'Send notes to a running agent, a new run, or the focused terminal (Orca’s review-note format)');
+    await phone.getByLabel('Start Claude Builder with review').click();
+    const spawns = await waitFor(async () => {
+      const s = await spawnsSince(before);
+      return s.length ? s : null;
+    }, 'review run spawned');
+    const prompt = spawns[0].args.prompt;
+    assert(prompt.includes('User comment: "Make the limit configurable via RATE_LIMIT_MAX"'), 'note in prompt');
+    assert(prompt.indexOf('File: package.json') < prompt.indexOf('File: src/server.ts'), 'notes sorted by file');
+    assert(prompt.includes('Line: 15') && prompt.includes('Code: app.use(rateLimit'), 'line + code context');
+    await phone.getByText('2 review notes').waitFor({ state: 'detached' });
+  });
+
+  await step('Code: send a note to the running agent as a single paste', async () => {
+    await addNote('Comment on src/server.ts line 15', 'Also cover the 429 response in tests');
+    const before = await invokeCount();
+    await phone.getByText('Send to agent →').click();
+    await phone.getByLabel('Send review to builder').first().click();
+    const write = await waitFor(
+      () =>
+        desktop.evaluate(
+          (n) => window.desktop.invokes().slice(n).find((c) => c.cmd === 'pty_write' && c.args.paneId === 'agent-pane'),
+          before
+        ),
+      'review pasted into agent'
+    );
+    const text = ptyText(write);
+    assert(text.startsWith('\x1b[200~') && text.endsWith('\x1b[201~\r'), 'bracketed paste + submit');
+    assert(text.includes('Also cover the 429 response in tests') && text.includes('\n'), 'multi-line prompt delivered whole');
+  });
+
+  await step('Files: browse the project lazily with git badges', async () => {
+    await phone.getByText('Files', { exact: true }).click();
+    await phone.getByText('README.md', { exact: true }).waitFor();
+    await phone.getByLabel('Folder src').click();
+    await phone.getByText('server.ts', { exact: true }).waitFor();
+    await phone.getByLabel('Folder lib').click();
+    await phone.getByText('rateLimit.ts', { exact: true }).waitFor();
+    await phone.getByLabel('Folder docs').click();
+    await phone.getByText('LIMITS.md', { exact: true }).waitFor();
+    const lists = await desktop.evaluate(() => window.desktop.invokes().filter((c) => c.cmd === 'list_workspace_files').length);
+    assert(lists === 1, `file tree cached between folder opens (${lists} scans)`);
+    await shot(phone, 'files-tree', 'Code → Files: lazy tree, folders first, git badges (M modified, U untracked)');
+  });
+
+  await step('Files: preview a file and comment on a line', async () => {
+    await phone.getByLabel('File server.ts').click();
+    await phone.getByText(/13 lines/).waitFor();
+    await phone.getByText('  app.use(routes);', { exact: true }).waitFor();
+    await shot(phone, 'file-preview', 'File preview with line numbers; tap a line to add a review note');
+    await phone.getByText('  app.use(routes);', { exact: true }).click();
+    await phone.getByPlaceholder('What should change here?').fill('Mount routes under /api');
+    await phone.getByText('Save note', { exact: true }).click();
+    await phone.getByLabel('Close preview').click();
+    await phone.getByText(/Changes · 1💬/).waitFor();
+  });
+
+  await step('History: search past runs and re-run one', async () => {
+    await phone.getByText('Swarm', { exact: true }).click();
+    await phone.getByText('History', { exact: true }).click();
+    await phone.getByText('Fix the flaky websocket reconnect test').waitFor();
+    await phone.getByText('Today', { exact: true }).waitFor();
+    await phone.getByText('Yesterday', { exact: true }).waitFor();
+    await phone.getByText('Completed', { exact: true }).first().waitFor();
+    assert(!(await phone.getByText('Initializing', { exact: true }).count()), 'live run status shown, not the stale DB copy');
+    await shot(phone, 'history', 'Swarm → History: past runs for the project grouped by day, with agent summaries');
+    await phone.getByPlaceholder('Search prompts, agents, summaries').fill('flaky');
+    await phone.getByText('Upgrade express to v5 and fix breaking changes').waitFor({ state: 'detached' });
+    await phone.getByText('Fix the flaky websocket reconnect test').click();
+    await phone.getByText(/20\/20 green runs/).waitFor();
+    await shot(phone, 'history-search', 'Search across prompts and summaries; tap a run for details');
+    const before = await invokeCount();
+    await phone.getByLabel('Re-run Fix the flaky websocket reconnect test').click();
+    const spawns = await waitFor(async () => {
+      const s = await spawnsSince(before);
+      return s.length ? s : null;
+    }, 're-run spawned');
+    assert(spawns[0].args.prompt === 'Fix the flaky websocket reconnect test', 'same prompt');
+    assert(spawns[0].args.presetId === 'claude-builder', 'same preset');
+    await phone.getByText(/Live \(\d+\)/).waitFor();
   });
 
   await step('Control: latency, pairing info and connection log', async () => {
