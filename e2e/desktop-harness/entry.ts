@@ -2,6 +2,7 @@ import { p2pBridge } from '@turbine/services/p2pBridge';
 import { useWorkspaceStore } from '@turbine/state/workspaceStore';
 import { useSwarmStore } from '@turbine/state/swarmStore';
 import { useTaskStore } from '@turbine/state/taskStore';
+import { useAgentStatusStore } from '@turbine/state/agentStatusStore';
 import { PROMPT } from './tauri-core';
 
 /**
@@ -88,6 +89,32 @@ p2pBridge.sendTerminalOutput(
 );
 p2pBridge.sendTerminalOutput('pane-web', '\x1b[1m▲ Next.js 15\x1b[0m\r\n- Local: http://localhost:3001\r\n\x1b[32m✓ Ready in 1.2s\x1b[0m\r\n');
 
+/** Stands in for the Rust status hub: hook events land in the same store. */
+const setStatus = (paneId: string, row: Record<string, unknown>) => {
+  const prev = useAgentStatusStore.getState().rows[paneId];
+  const now = Date.now();
+  useAgentStatusStore.setState((s) => ({
+    rows: {
+      ...s.rows,
+      [paneId]: {
+        paneId,
+        agent: 'claude',
+        prompt: null,
+        tool: null,
+        toolInput: null,
+        message: null,
+        exitCode: null,
+        sessionId: null,
+        startedAt: prev?.startedAt ?? now - 95_000,
+        updatedAt: now,
+        lastEvent: 'test',
+        ...(prev ?? {}),
+        ...row,
+      } as any,
+    },
+  }));
+};
+
 const render = () => {
   const s = p2pBridge.getSession();
   document.getElementById('status')!.textContent = p2pBridge.getStatus();
@@ -116,7 +143,15 @@ p2pBridge.onSessionChange(render);
       agents,
       runs: useSwarmStore.getState().runs.map((r) => ({ ...r, status: 'Completed' as const })),
     });
+    // What the exit marker reports through the hub when the agent process ends.
+    setStatus('agent-pane', { agent: 'builder', state: 'done', exitCode: 0, message: summary });
   },
+  status: setStatus,
+  subscribed: () => {
+    const set = (p2pBridge as any).subscribedPanes as Set<string> | null;
+    return set ? [...set].sort() : null;
+  },
+  peerCaps: () => [...((p2pBridge as any).peerCaps as Set<string>)].sort(),
   tasks: () => useTaskStore.getState().tasks,
   activeWorkspace: () => useWorkspaceStore.getState().activeWorkspaceId,
   invokes: () => (window as any).__invokeLog,

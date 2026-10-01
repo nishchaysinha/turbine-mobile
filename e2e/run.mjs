@@ -226,6 +226,8 @@ async function main() {
   });
 
   let code = '';
+  const ptyText = (call) => Buffer.from(call.args.data).toString();
+  const invokeCount = () => desktop.evaluate(() => window.desktop.invokes().length);
 
   await step('Desktop registers an offer and shows a pairing code', async () => {
     await desktop.evaluate((url) => window.desktop.start(url), signaling.url);
@@ -255,11 +257,69 @@ async function main() {
     await phone.getByPlaceholder('TRB-XXXXXX').fill(code.slice(4).toLowerCase());
     await shot(phone, 'connect-code-entered', 'Code entered (case and prefix are normalized)');
     await phone.getByText('Connect', { exact: true }).click();
-    await phone.getByText('api-server', { exact: true }).first().waitFor({ timeout: 25000 });
+    await phone.getByText('Live from your desktop').waitFor({ timeout: 25000 });
     await waitFor(() => desktop.evaluate(() => window.desktop.bridge.getStatus() === 'connected'), 'desktop connected');
   });
 
+  await step('Protocol v2 is negotiated (hello + capabilities)', async () => {
+    const caps = await waitFor(async () => {
+      const c = await desktop.evaluate(() => window.desktop.peerCaps());
+      return c.length ? c : null;
+    }, 'hello received');
+    assert(caps.join(',') === 'agents,rpc,terminal.subscribe', `phone capabilities ${caps}`);
+    // Nothing is on screen yet, so the desktop streams no terminal output.
+    assert(JSON.stringify(await desktop.evaluate(() => window.desktop.subscribed())) === '[]', 'no panes subscribed on Agents tab');
+  });
+
+  await step('Agents: command center mirrors the desktop status hub', async () => {
+    await desktop.evaluate(() => {
+      window.desktop.status('pane-shell', { state: 'working', prompt: 'Add rate limiting to the API and cover it with tests', tool: 'Bash', toolInput: 'pnpm vitest run src/server.test.ts' });
+      window.desktop.status('pane-tests', { state: 'blocked', prompt: 'Fix the flaky websocket reconnect test', message: 'Claude needs your permission to use Edit on src/ws.test.ts' });
+      window.desktop.status('pane-logs', { agent: 'codex', state: 'done', prompt: 'Explain the slow query warning', message: 'The 812ms query scans users without an index on email. Add CREATE INDEX users_email_idx.' });
+    });
+    await phone.getByText('1 need you').waitFor();
+    await phone.getByText('Claude needs your permission to use Edit on src/ws.test.ts').waitFor();
+    await phone.getByText(/pnpm vitest run/).waitFor();
+    await shot(phone, 'agents-command-center', 'Agents: every desktop agent with live status, what it is doing, and what it needs from you');
+  });
+
+  await step('Agents: approve a permission prompt from the phone', async () => {
+    const before = await invokeCount();
+    await phone.getByLabel('Approve vitest --watch').click();
+    const write = await waitFor(
+      () => desktop.evaluate((n) => window.desktop.invokes().slice(n).find((c) => c.cmd === 'pty_write'), before),
+      'approve keystroke'
+    );
+    assert(write.args.paneId === 'pane-tests' && ptyText(write) === '\r', `approve sent Enter to the agent, got ${JSON.stringify(write.args)}`);
+  });
+
+  await step('Agents: reply to an agent that finished its turn', async () => {
+    const before = await invokeCount();
+    await phone.getByPlaceholder('Reply to agent…').fill('Add the index in a migration and update the docs');
+    await shot(phone, 'agents-reply', 'Reply to an agent that finished its turn, straight from the command center');
+    await phone.getByLabel('Send reply to dev server').click();
+    const write = await waitFor(
+      () => desktop.evaluate((n) => window.desktop.invokes().slice(n).find((c) => c.cmd === 'pty_write'), before),
+      'reply keystrokes'
+    );
+    assert(write.args.paneId === 'pane-logs' && ptyText(write) === 'Add the index in a migration and update the docs\r', 'reply typed into agent');
+    await desktop.evaluate(() => window.desktop.status('pane-tests', { state: 'working', message: null, tool: 'Edit', toolInput: 'src/ws.test.ts' }));
+    await phone.getByText('1 need you').waitFor({ state: 'detached' });
+  });
+
+  await step('Agents: open an agent terminal (subscribes only that pane)', async () => {
+    await phone.getByLabel('Open zsh').click();
+    await phone.getByText('Tiled Layout').waitFor();
+    await waitFor(async () => JSON.stringify(await desktop.evaluate(() => window.desktop.subscribed())) === '["pane-shell"]', 'focused pane subscribed');
+    await phone.getByText('Tiled Layout').click();
+    await waitFor(
+      async () => JSON.stringify(await desktop.evaluate(() => window.desktop.subscribed())) === '["pane-logs","pane-shell","pane-tests"]',
+      'tiles subscribed'
+    );
+  });
+
   await step('Tiled workspace mirrors the desktop layout with clean previews', async () => {
+    await phone.getByText('Terminals', { exact: true }).click();
     for (const title of ['zsh', 'vitest --watch', 'dev server']) {
       await phone.getByText(title, { exact: true }).first().waitFor();
     }
@@ -343,7 +403,7 @@ async function main() {
   });
 
   await step('Swarm: launch a run with a chosen agent preset', async () => {
-    await phone.getByText('Swarm', { exact: true }).click();
+    await phone.getByText('Runs', { exact: true }).click();
     await phone.getByText('+ New Run').click();
     await phone.getByText('Codex Reviewer').waitFor();
     await phone.getByText('Claude Builder').click();
@@ -371,16 +431,17 @@ async function main() {
   });
 
   await step('Agent completion shows an in-app notification', async () => {
-    await phone.getByText('Tasks', { exact: true }).click();
+    await phone.getByText('Code', { exact: true }).click();
     await desktop.evaluate(() => window.desktop.finishAgent('Added express-rate-limit (100 req/min) + 6 tests'));
     await phone.getByText(/builder finished/).waitFor({ timeout: 10000 });
     await shot(phone, 'agent-finished-toast', 'When an agent finishes you get a banner (and a push notification when backgrounded)');
     await phone.getByText(/builder finished/).click();
     await phone.getByText(/6 tests/).waitFor();
-    await shot(phone, 'swarm-completed', 'Completed run with the agent summary');
+    await shot(phone, 'agent-finished-detail', 'Tapping the banner opens the agent with its final message');
   });
 
   await step('Tasks: create a task from the phone', async () => {
+    await phone.getByText('Runs', { exact: true }).click();
     await phone.getByText('Tasks', { exact: true }).click();
     await phone.getByText('Add rate limiting to API').waitFor();
     await shot(phone, 'tasks-board', 'Kanban board synced from the desktop');
@@ -394,10 +455,8 @@ async function main() {
     assert(created?.project_path === '/Users/dev/project', `task created in project, got ${created?.project_path}`);
   });
 
-  const ptyText = (call) => Buffer.from(call.args.data).toString();
   const spawnsSince = (n) =>
     desktop.evaluate((n) => window.desktop.invokes().slice(n).filter((c) => c.cmd === 'swarm_spawn_agent'), n);
-  const invokeCount = () => desktop.evaluate(() => window.desktop.invokes().length);
 
   async function addNote(label, text) {
     await phone.getByLabel(label, { exact: true }).click();
@@ -485,7 +544,7 @@ async function main() {
   });
 
   await step('History: search past runs and re-run one', async () => {
-    await phone.getByText('Swarm', { exact: true }).click();
+    await phone.getByText('Runs', { exact: true }).click();
     await phone.getByText('History', { exact: true }).click();
     await phone.getByText('Fix the flaky websocket reconnect test').waitFor();
     await phone.getByText('Today', { exact: true }).waitFor();
@@ -513,6 +572,7 @@ async function main() {
     await phone.getByText('Control', { exact: true }).click();
     await phone.getByText(/^⚡ \d+ms$/).waitFor({ timeout: 10000 });
     await phone.getByText('3 panes').waitFor();
+    await phone.getByText(/^v2 \(rpc, agents, terminal\.subscribe\)$/).waitFor();
     await phone.getByText('1 pane', { exact: true }).waitFor();
     await phone.getByText(code).first().waitFor();
     await shot(phone, 'control', 'Control tab: live latency, pairing code, workspace switcher and connection log');
@@ -551,7 +611,7 @@ async function main() {
 
   await step('One-tap reconnect from recent desktops', async () => {
     await phone.getByText(code).first().click();
-    await phone.getByText('api-server', { exact: true }).first().waitFor({ timeout: 30000 });
+    await phone.getByText('Live from your desktop').waitFor({ timeout: 30000 });
   });
 
   await step('No uncaught errors in the phone app', async () => {
